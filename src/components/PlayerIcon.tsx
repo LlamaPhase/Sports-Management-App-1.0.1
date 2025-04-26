@@ -20,8 +20,11 @@ interface PlayerIconProps {
   isStarter?: boolean;
   subbedOnCount?: number;
   subbedOffCount?: number;
+  // NEW: Goal/Assist counts derived from events
   goalCount?: number;
   assistCount?: number;
+  // NEW: Initial position to determine if starter icon should show
+  initialPosition?: { x: number; y: number };
 }
 
 const PlayerIcon: React.FC<PlayerIconProps> = ({
@@ -34,8 +37,9 @@ const PlayerIcon: React.FC<PlayerIconProps> = ({
   isStarter = false,
   subbedOnCount = 0,
   subbedOffCount = 0,
-  goalCount = 0,
+  goalCount = 0, // Default counts
   assistCount = 0,
+  initialPosition, // Added prop
 }) => {
   const getInitials = (first: string, last: string) => `${first?.[0] ?? ''}${last?.[0] ?? ''}`.toUpperCase();
 
@@ -59,56 +63,38 @@ const PlayerIcon: React.FC<PlayerIconProps> = ({
   const showSubOn = showSubCounters && subbedOnCount > 0;
   const showSubOff = showSubCounters && subbedOffCount > 0;
 
+  // UPDATED: Condition for showing starter icon
+  const showStarterIcon = isStarter && !!initialPosition && showSubCounters;
+
   const counterTopOffset = '16px';
   const counterLeftOffset = '-12px';
   const counterSpacing = '18px';
 
-  // --- Goal/Assist Icon Rendering ---
+  // --- NEW: Goal/Assist Icon Rendering ---
   const showGoalAssistIcons = (context === 'field' || context === 'bench' || context === 'inactive') && (goalCount > 0 || assistCount > 0);
+  // Use Goal icon for goals
   const goalIcons = Array.from({ length: goalCount }, (_, i) => (
     <Goal key={`goal-${i}`} size={12} className="text-black" />
   ));
   const assistIcons = Array.from({ length: assistCount }, (_, i) => (
     <Footprints key={`assist-${i}`} size={12} className="text-blue-600" /> // Using Footprints for assist
   ));
+  // Combine and limit total icons shown for space? (Optional)
   const eventIcons = [...goalIcons, ...assistIcons];
   // --- End Goal/Assist Icon Rendering ---
 
-  // Calculate bottom offset for icons based on size to position above name
-  const iconBottomOffset = size === 'small' ? 'bottom-5 md:bottom-6' : size === 'medium' ? 'bottom-6 md:bottom-7' : 'bottom-7 md:bottom-8';
-
   return (
     <div className={`relative flex flex-col items-center ${showName ? containerSpacing : ''}`}>
-      {/* Player Circle - Make it relative to position icons against it */}
+      {/* Player Circle */}
       <div
-        className={`relative ${sizeClasses[size]} ${circleBgClass} ${circleTextColorClass} ${circleBorderClass} rounded-full flex items-center justify-center font-semibold shadow-sm`}
+        className={`${sizeClasses[size]} ${circleBgClass} ${circleTextColorClass} ${circleBorderClass} rounded-full flex items-center justify-center font-semibold shadow-sm`}
         title={`${player.firstName} ${player.lastName} #${player.number}`}
       >
         {getInitials(player.firstName, player.lastName)}
+      </div>
 
-        {/* --- Goal/Assist Icons Container - Positioned relative to the circle --- */}
-        {showGoalAssistIcons && (
-          <div
-            // Position near bottom-right edge of the circle, overlapping slightly
-            // Using bottom-0 and right-0 places it inside the bottom-right corner
-            // Adjusting with small negative values pushes it slightly outside
-            className="absolute bottom-[-2px] right-[-2px] flex space-x-[-4px] z-10"
-            title={`Goals: ${goalCount}, Assists: ${assistCount}`}
-          >
-            {eventIcons.map((icon, index) => (
-              <div key={index} className="bg-white/70 rounded-full p-0.5 shadow">
-                {icon}
-              </div>
-            ))}
-          </div>
-        )}
-         {/* --- End Goal/Assist Icons Container --- */}
-
-      </div> {/* End of Player Circle */}
-
-
-      {/* Starter Indicator */}
-      {isStarter && showSubCounters && (
+      {/* Starter Indicator - UPDATED Condition */}
+      {showStarterIcon && (
           <div className="absolute -top-1 -left-1 w-4 h-4 bg-black border border-white rounded-full flex items-center justify-center shadow z-20" title="Starter">
               <span className="text-white text-[9px] font-bold leading-none">S</span>
           </div>
@@ -137,11 +123,24 @@ const PlayerIcon: React.FC<PlayerIconProps> = ({
           </div>
       )}
 
+      {/* --- NEW: Goal/Assist Icons Container --- */}
+      {showGoalAssistIcons && (
+        <div
+          className="absolute -bottom-1 right-0 flex space-x-[-4px] z-10" // Negative margin for overlap
+          title={`Goals: ${goalCount}, Assists: ${assistCount}`}
+        >
+          {eventIcons.map((icon, index) => (
+            <div key={index} className="bg-white/70 rounded-full p-0.5 shadow">
+              {icon}
+            </div>
+          ))}
+        </div>
+      )}
+      {/* --- End Goal/Assist Icons Container --- */}
 
       {/* Player Name & Number */}
       {showName && (
-        // Added pt-1 to give space below the circle/icons
-        <span className={`text-center ${nameColorClass} ${nameTextSizeClass} font-medium leading-tight max-w-[50px] md:max-w-[60px] truncate pt-1`}>
+        <span className={`text-center ${nameColorClass} ${nameTextSizeClass} font-medium leading-tight max-w-[50px] md:max-w-[60px] truncate pt-1`}> {/* Added pt-1 */}
           {player.firstName}
           {player.number && <span className={`block ${numberColorClass} ${numberTextSizeClass}`}>#{player.number}</span>}
         </span>

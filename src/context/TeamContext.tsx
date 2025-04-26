@@ -15,23 +15,35 @@ export interface PlayerLineupState {
   id: string;
   location: 'bench' | 'field' | 'inactive';
   position?: { x: number; y: number };
+  // NEW: Store initial position for post-game display
+  initialPosition?: { x: number; y: number };
   playtimeSeconds: number;
   playtimerStartTime: number | null;
-  isStarter?: boolean;
+  isStarter?: boolean; // Flag to indicate if player was part of the starting lineup (field or bench)
   subbedOnCount: number;
   subbedOffCount: number;
 }
 
 export type PlayerLineupStructure = Pick<PlayerLineupState, 'id' | 'location' | 'position'>;
 
-// NEW: Game Event Type
+// UPDATED: Game Event Type
 export interface GameEvent {
   id: string; // Unique ID for the event
-  type: 'goal'; // Currently only 'goal', could expand later (e.g., 'card')
-  team: 'home' | 'away'; // Which team scored
-  scorerPlayerId: string | null; // Player ID if tracked, null if just score increment
-  assistPlayerId?: string | null; // Player ID if tracked
-  timestamp: number; // Used for ordering and removal logic
+  // UPDATED: Event types
+  type: 'goal' | 'substitution'; // | 'yellow_card' | 'red_card'; // Deferring cards
+  team: 'home' | 'away'; // Which team scored (for goals) or whose player was involved (for subs)
+  // Goal specific
+  scorerPlayerId?: string | null;
+  assistPlayerId?: string | null;
+  // Substitution specific
+  playerInId?: string;
+  playerOutId?: string;
+  // Card specific (Deferred)
+  // cardPlayerId?: string;
+  // cardType?: 'yellow' | 'red';
+  timestamp: number; // Used for ordering if seconds are identical
+  // NEW: Store game seconds at the time of the event
+  gameSeconds: number;
 }
 
 export interface Game {
@@ -48,8 +60,9 @@ export interface Game {
   timerStartTime?: number | null;
   timerElapsedSeconds?: number;
   isExplicitlyFinished?: boolean;
+  // UPDATED: Lineup state includes initialPosition and isStarter
   lineup?: PlayerLineupState[] | null;
-  // NEW: Array to store game events (goals, assists)
+  // UPDATED: Events store gameSeconds and new types
   events?: GameEvent[];
 }
 
@@ -74,9 +87,8 @@ interface TeamContextProps {
   deletePlayer: (id: string) => void;
   games: Game[];
   addGame: (opponent: string, date: string, time: string, location: 'home' | 'away', season?: string, competition?: string) => void;
-  updateGame: (id: string, updates: Partial<Omit<Game, 'id' | 'homeScore' | 'awayScore' | 'timerStatus' | 'timerStartTime' | 'timerElapsedSeconds' | 'isExplicitlyFinished' | 'lineup' | 'events'>>) => void; // Exclude events from simple update
+  updateGame: (id: string, updates: Partial<Omit<Game, 'id' | 'homeScore' | 'awayScore' | 'timerStatus' | 'timerStartTime' | 'timerElapsedSeconds' | 'isExplicitlyFinished' | 'lineup' | 'events'>>) => void;
   deleteGame: (id: string) => void;
-  // updateGameScore: (gameId: string, homeScore: number, awayScore: number) => void; // Replaced by add/remove event
   startGameTimer: (gameId: string) => void;
   stopGameTimer: (gameId: string) => void;
   markGameAsFinished: (gameId: string) => void;
@@ -102,9 +114,10 @@ interface TeamContextProps {
   gameHistory: GameHistory;
   getMostRecentSeason: () => string | undefined;
   getMostRecentCompetition: () => string | undefined;
-  // NEW: Event handling functions
+  // UPDATED: Event handling functions signature might change if needed
   addGameEvent: (gameId: string, team: 'home' | 'away', scorerPlayerId: string | null, assistPlayerId?: string | null) => void;
   removeLastGameEvent: (gameId: string, team: 'home' | 'away') => void;
+  // addCardEvent: (gameId: string, playerId: string, cardType: 'yellow' | 'red') => void; // Deferred
 }
 
 // --- Context ---
@@ -113,7 +126,6 @@ export const TeamContext = createContext<TeamContextProps>({
   teamLogo: null, setTeamLogo: () => {},
   players: [], addPlayer: () => {}, updatePlayer: () => {}, deletePlayer: () => {},
   games: [], addGame: () => {}, updateGame: () => {}, deleteGame: () => {},
-  // updateGameScore: () => {}, // Removed
   startGameTimer: () => {}, stopGameTimer: () => {}, markGameAsFinished: () => {},
   resetGameLineup: () => [],
   movePlayerInGame: () => {},
@@ -126,9 +138,9 @@ export const TeamContext = createContext<TeamContextProps>({
   gameHistory: { seasons: [], competitions: [] },
   getMostRecentSeason: () => undefined,
   getMostRecentCompetition: () => undefined,
-  // NEW: Default event functions
   addGameEvent: () => { console.warn("Default addGameEvent context function called."); },
   removeLastGameEvent: () => { console.warn("Default removeLastGameEvent context function called."); },
+  // addCardEvent: () => { console.warn("Default addCardEvent context function called."); }, // Deferred
 });
 
 // --- Provider ---
@@ -143,7 +155,8 @@ const getCurrentTime = (): string => { const d = new Date(); return `${String(d.
 
 const createDefaultLineup = (players: Player[]): PlayerLineupState[] => {
     return players.map(p => ({
-        id: p.id, location: 'bench', position: undefined, playtimeSeconds: 0, playtimerStartTime: null, isStarter: false, subbedOnCount: 0, subbedOffCount: 0,
+        id: p.id, location: 'bench', position: undefined, initialPosition: undefined, // Initialize initialPosition
+        playtimeSeconds: 0, playtimerStartTime: null, isStarter: false, subbedOnCount: 0, subbedOffCount: 0,
     }));
 };
 
@@ -163,27 +176,45 @@ const loadFromLocalStorage = <T,>(key: string, defaultValue: T): T => {
           const location = ['field', 'bench', 'inactive'].includes(p.location) ? p.location : 'bench';
           return {
             id: p.id, location: location, position: p.position,
+            initialPosition: p.initialPosition, // Load initialPosition
             playtimeSeconds: typeof p.playtimeSeconds === 'number' ? p.playtimeSeconds : 0,
             playtimerStartTime: typeof p.playtimerStartTime === 'number' ? p.playtimerStartTime : null,
-            isStarter: typeof p.isStarter === 'boolean' ? p.isStarter : false,
+            isStarter: typeof p.isStarter === 'boolean' ? p.isStarter : false, // Load isStarter
             subbedOnCount: typeof p.subbedOnCount === 'number' ? p.subbedOnCount : 0,
             subbedOffCount: typeof p.subbedOffCount === 'number' ? p.subbedOffCount : 0,
           };
         }).filter(p => p !== null) : null;
-        // NEW: Validate events array
+        // UPDATED: Validate events array with new fields/types
         const validEvents = Array.isArray(g.events) ? g.events.map((ev: any) => {
-            if (typeof ev !== 'object' || ev === null || !ev.id || ev.type !== 'goal' || !ev.team || typeof ev.timestamp !== 'number') {
+            if (typeof ev !== 'object' || ev === null || !ev.id || !ev.type || !ev.team || typeof ev.timestamp !== 'number' || typeof ev.gameSeconds !== 'number') {
                 console.warn(`Invalid game event data in game ${g.id}, skipping event:`, ev); return null;
             }
-            return {
+            const baseEvent = {
                 id: ev.id,
-                type: 'goal',
-                team: ['home', 'away'].includes(ev.team) ? ev.team : 'home', // Default to home if invalid
-                scorerPlayerId: typeof ev.scorerPlayerId === 'string' ? ev.scorerPlayerId : null,
-                assistPlayerId: typeof ev.assistPlayerId === 'string' ? ev.assistPlayerId : undefined, // Allow undefined if not present
+                type: ev.type,
+                team: ['home', 'away'].includes(ev.team) ? ev.team : 'home',
                 timestamp: ev.timestamp,
+                gameSeconds: ev.gameSeconds,
             };
-        }).filter(ev => ev !== null) : []; // Default to empty array if not present or invalid
+            if (ev.type === 'goal') {
+                return {
+                    ...baseEvent,
+                    scorerPlayerId: typeof ev.scorerPlayerId === 'string' ? ev.scorerPlayerId : null,
+                    assistPlayerId: typeof ev.assistPlayerId === 'string' ? ev.assistPlayerId : undefined,
+                };
+            } else if (ev.type === 'substitution') {
+                 return {
+                    ...baseEvent,
+                    playerInId: typeof ev.playerInId === 'string' ? ev.playerInId : undefined,
+                    playerOutId: typeof ev.playerOutId === 'string' ? ev.playerOutId : undefined,
+                };
+            }
+            // Add card validation here if implemented later
+            else {
+                 console.warn(`Unknown event type "${ev.type}" in game ${g.id}, skipping event:`, ev);
+                 return null;
+            }
+        }).filter(ev => ev !== null) : [];
 
         return {
           id: g.id,
@@ -200,7 +231,7 @@ const loadFromLocalStorage = <T,>(key: string, defaultValue: T): T => {
           timerElapsedSeconds: typeof g.timerElapsedSeconds === 'number' ? g.timerElapsedSeconds : 0,
           isExplicitlyFinished: typeof g.isExplicitlyFinished === 'boolean' ? g.isExplicitlyFinished : false,
           lineup: validLineup,
-          events: validEvents, // Assign validated events
+          events: validEvents,
         };
       }).filter(g => g !== null) as T;
     }
@@ -271,7 +302,7 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
         ...game,
         lineup: game.lineup ? [
             ...game.lineup,
-            { id: newPlayer.id, location: 'bench', position: undefined, playtimeSeconds: 0, playtimerStartTime: null, isStarter: false, subbedOnCount: 0, subbedOffCount: 0 }
+            { id: newPlayer.id, location: 'bench', position: undefined, initialPosition: undefined, playtimeSeconds: 0, playtimerStartTime: null, isStarter: false, subbedOnCount: 0, subbedOffCount: 0 }
         ] : createDefaultLineup([...currentPlayers, newPlayer])
     })));
   };
@@ -285,8 +316,7 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
     setGamesState((prevGames) => prevGames.map(game => ({
         ...game,
         lineup: game.lineup ? game.lineup.filter(p => p.id !== id) : null,
-        // Also remove player from events if they are deleted
-        events: game.events ? game.events.filter(ev => ev.scorerPlayerId !== id && ev.assistPlayerId !== id) : [],
+        events: game.events ? game.events.filter(ev => ev.scorerPlayerId !== id && ev.assistPlayerId !== id && ev.playerInId !== id && ev.playerOutId !== id) : [],
     })));
     setSavedLineupsState((prevSaved) => prevSaved.map(sl => ({
         ...sl, players: sl.players.filter(p => p.id !== id)
@@ -311,7 +341,7 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
         homeScore: 0, awayScore: 0, timerStatus: 'stopped', timerStartTime: null, timerElapsedSeconds: 0,
         isExplicitlyFinished: false,
         lineup: createDefaultLineup(currentPlayers),
-        events: [], // Initialize events array
+        events: [],
     };
     setGamesState((prev) => [...prev, newGame].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
     updateHistory(season, competition);
@@ -333,56 +363,73 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
 
   const deleteGame = (id: string) => { setGamesState((prev) => prev.filter(g => g.id !== id)); };
 
-  // --- NEW: addGameEvent ---
+  // --- UPDATED: addGameEvent (Goal) ---
   const addGameEvent = (gameId: string, team: 'home' | 'away', scorerPlayerId: string | null, assistPlayerId?: string | null) => {
-    const newEvent: GameEvent = {
-        id: uuidv4(),
-        type: 'goal',
-        team: team,
-        scorerPlayerId: scorerPlayerId,
-        assistPlayerId: assistPlayerId,
-        timestamp: Date.now(),
-    };
-    setGamesState(prevGames => prevGames.map(game => {
-        if (game.id === gameId) {
-            const updatedEvents = [...(game.events || []), newEvent];
-            const newHomeScore = team === 'home' ? (game.homeScore ?? 0) + 1 : (game.homeScore ?? 0);
-            const newAwayScore = team === 'away' ? (game.awayScore ?? 0) + 1 : (game.awayScore ?? 0);
-            return { ...game, events: updatedEvents, homeScore: newHomeScore, awayScore: newAwayScore };
+    setGamesState(prevGames => {
+        const gameIndex = prevGames.findIndex(g => g.id === gameId);
+        if (gameIndex === -1) return prevGames;
+        const game = prevGames[gameIndex];
+
+        // Calculate current game seconds
+        let currentSeconds = game.timerElapsedSeconds ?? 0;
+        if (game.timerStatus === 'running' && game.timerStartTime) {
+            currentSeconds += (Date.now() - game.timerStartTime) / 1000;
         }
-        return game;
-    }));
+
+        const newEvent: GameEvent = {
+            id: uuidv4(),
+            type: 'goal',
+            team: team,
+            scorerPlayerId: scorerPlayerId,
+            assistPlayerId: assistPlayerId,
+            timestamp: Date.now(),
+            gameSeconds: Math.round(currentSeconds), // Store rounded seconds
+        };
+
+        const updatedEvents = [...(game.events || []), newEvent];
+        const newHomeScore = team === 'home' ? (game.homeScore ?? 0) + 1 : (game.homeScore ?? 0);
+        const newAwayScore = team === 'away' ? (game.awayScore ?? 0) + 1 : (game.awayScore ?? 0);
+
+        const updatedGames = [...prevGames];
+        updatedGames[gameIndex] = { ...game, events: updatedEvents, homeScore: newHomeScore, awayScore: newAwayScore };
+        return updatedGames;
+    });
   };
 
-  // --- NEW: removeLastGameEvent ---
+  // --- UPDATED: removeLastGameEvent ---
   const removeLastGameEvent = (gameId: string, team: 'home' | 'away') => {
-    setGamesState(prevGames => prevGames.map(game => {
-        if (game.id === gameId) {
-            const events = game.events || [];
-            // Find the index of the last event for the specified team
-            let lastEventIndex = -1;
-            for (let i = events.length - 1; i >= 0; i--) {
-                if (events[i].team === team) {
-                    lastEventIndex = i;
-                    break;
-                }
-            }
+    setGamesState(prevGames => {
+        const gameIndex = prevGames.findIndex(g => g.id === gameId);
+        if (gameIndex === -1) return prevGames;
+        const game = prevGames[gameIndex];
+        const events = game.events || [];
 
-            if (lastEventIndex !== -1) {
-                const updatedEvents = [...events];
-                updatedEvents.splice(lastEventIndex, 1); // Remove the last event
-
-                const newHomeScore = team === 'home' ? Math.max(0, (game.homeScore ?? 0) - 1) : (game.homeScore ?? 0);
-                const newAwayScore = team === 'away' ? Math.max(0, (game.awayScore ?? 0) - 1) : (game.awayScore ?? 0);
-
-                return { ...game, events: updatedEvents, homeScore: newHomeScore, awayScore: newAwayScore };
+        // Find the index of the last GOAL event for the specified team
+        let lastGoalEventIndex = -1;
+        for (let i = events.length - 1; i >= 0; i--) {
+            if (events[i].type === 'goal' && events[i].team === team) {
+                lastGoalEventIndex = i;
+                break;
             }
         }
-        return game;
-    }));
+
+        if (lastGoalEventIndex !== -1) {
+            const updatedEvents = [...events];
+            updatedEvents.splice(lastGoalEventIndex, 1); // Remove the last goal event
+
+            const newHomeScore = team === 'home' ? Math.max(0, (game.homeScore ?? 0) - 1) : (game.homeScore ?? 0);
+            const newAwayScore = team === 'away' ? Math.max(0, (game.awayScore ?? 0) - 1) : (game.awayScore ?? 0);
+
+            const updatedGames = [...prevGames];
+            updatedGames[gameIndex] = { ...game, events: updatedEvents, homeScore: newHomeScore, awayScore: newAwayScore };
+            return updatedGames;
+        }
+        // If no goal event found for that team, do nothing
+        return prevGames;
+    });
   };
 
-  // --- Game Timer (Unchanged) ---
+  // --- UPDATED: Game Timer ---
   const startGameTimer = (gameId: string) => {
     const now = Date.now(); const currentDate = getCurrentDate(); const currentTime = getCurrentTime();
     setGamesState((prev) => prev.map((g) => {
@@ -390,16 +437,29 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
           const updates: Partial<Game> = {};
           if (g.date !== currentDate) updates.date = currentDate;
           if (g.time !== currentTime) updates.time = currentTime;
-          const isStartingFresh = (g.timerElapsedSeconds ?? 0) === 0;
+          // Determine if this is the very first time the timer is starting
+          const isStartingFresh = (g.timerElapsedSeconds ?? 0) === 0 && !g.timerStartTime;
+
           const newLineup = g.lineup?.map(p => {
               const isFieldPlayer = p.location === 'field';
-              return { ...p, playtimerStartTime: isFieldPlayer ? now : p.playtimerStartTime, isStarter: isStartingFresh ? isFieldPlayer : (p.isStarter ?? false) };
+              // Store initial position and starter status only when starting fresh
+              const initialPosition = isStartingFresh && isFieldPlayer ? p.position : p.initialPosition;
+              // Set isStarter flag only when starting fresh (based on initial field/bench location)
+              const isStarter = isStartingFresh ? (p.location === 'field' || p.location === 'bench') : (p.isStarter ?? false);
+
+              return {
+                  ...p,
+                  playtimerStartTime: isFieldPlayer ? now : p.playtimerStartTime, // Start timer only for field players
+                  isStarter: isStarter, // Set starter flag
+                  initialPosition: initialPosition, // Set initial position (only if starting fresh & on field)
+              };
           }) ?? null;
           return { ...g, ...updates, timerStatus: 'running', timerStartTime: now, isExplicitlyFinished: false, lineup: newLineup };
         } return g;
       })
     );
   };
+  // stopGameTimer and markGameAsFinished remain unchanged in their core logic
   const stopGameTimer = (gameId: string) => {
     const now = Date.now();
     setGamesState((prev) => prev.map((g) => {
@@ -407,6 +467,7 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
           const elapsed = (now - g.timerStartTime) / 1000;
           const newElapsedSeconds = Math.round((g.timerElapsedSeconds || 0) + elapsed);
           const newLineup = g.lineup?.map(p => {
+              // Stop timer for players currently on field OR inactive (if they were moved there while timer ran)
               if ((p.location === 'field' || p.location === 'inactive') && p.playtimerStartTime) {
                   const playerElapsed = (now - p.playtimerStartTime) / 1000;
                   const currentPlaytime = typeof p.playtimeSeconds === 'number' ? p.playtimeSeconds : 0;
@@ -425,6 +486,7 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
          if (g.id === gameId) {
            let finalElapsedSeconds = g.timerElapsedSeconds ?? 0;
            let finalLineup = g.lineup;
+           // If timer was running when finished, stop it and update times
            if (g.timerStatus === 'running' && g.timerStartTime) {
              const elapsed = (now - g.timerStartTime) / 1000;
              finalElapsedSeconds = Math.round((g.timerElapsedSeconds || 0) + elapsed);
@@ -437,6 +499,9 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
                  } return p;
              }) ?? null;
            }
+           // Ensure all player timers are nullified even if game was paused
+           finalLineup = finalLineup?.map(p => ({ ...p, playtimerStartTime: null })) ?? null;
+
            return { ...g, timerStatus: 'stopped', timerStartTime: null, timerElapsedSeconds: finalElapsedSeconds, isExplicitlyFinished: true, lineup: finalLineup };
          } return g;
        })
@@ -485,45 +550,98 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
    const resetGameLineup = (gameId: string): PlayerLineupState[] => {
        const currentPlayers = loadFromLocalStorage('players', []);
        const defaultLineup = createDefaultLineup(currentPlayers);
-       setGamesState((prevGames) => prevGames.map(game => game.id === gameId ? { ...game, lineup: defaultLineup } : game));
+       setGamesState((prevGames) => prevGames.map(game => game.id === gameId ? { ...game, lineup: defaultLineup, timerElapsedSeconds: 0, timerStartTime: null, timerStatus: 'stopped', isExplicitlyFinished: false, homeScore: 0, awayScore: 0, events: [] } : game)); // Also reset timer, score, events
        return defaultLineup;
    };
+
+   // --- UPDATED: movePlayerInGame (to log substitutions) ---
    const movePlayerInGame = (gameId: string, playerId: string, sourceLocation: PlayerLineupState['location'], targetLocation: PlayerLineupState['location'], newPosition?: { x: number; y: number }) => {
     const now = Date.now();
     setGamesState(prevGames => {
       const gameIndex = prevGames.findIndex(g => g.id === gameId);
-      if (gameIndex === -1 || !prevGames[gameIndex].lineup) return prevGames;
-      const game = prevGames[gameIndex];
-      const isGameRunning = game.timerStatus === 'running';
-      let newLineup = [...game.lineup];
+      if (gameIndex === -1) return prevGames; // Game not found
+
+      const game = { ...prevGames[gameIndex] }; // Shallow copy game
+      if (!game.lineup) return prevGames; // No lineup to modify
+
+      const isGameActive = game.timerStatus === 'running' || (game.timerStatus === 'stopped' && (game.timerElapsedSeconds ?? 0) > 0);
+      let newLineup = [...game.lineup]; // Shallow copy lineup
       const playerIndex = newLineup.findIndex(p => p.id === playerId);
-      if (playerIndex === -1) return prevGames;
-      const playerState = { ...newLineup[playerIndex] };
+      if (playerIndex === -1) return prevGames; // Player not found
+
+      const playerState = { ...newLineup[playerIndex] }; // Shallow copy player state
+
+      // --- Update Player State ---
       let updatedPlaytime = playerState.playtimeSeconds;
       let updatedStartTime = playerState.playtimerStartTime;
+
+      // Stop timer if moving off field/inactive
       if ((sourceLocation === 'field' || sourceLocation === 'inactive') && playerState.playtimerStartTime) {
         const elapsed = (now - playerState.playtimerStartTime) / 1000;
         updatedPlaytime = Math.round(playerState.playtimeSeconds + elapsed);
         updatedStartTime = null;
       }
-      if (targetLocation === 'field' && isGameRunning && updatedStartTime === null) {
+      // Start timer if moving onto field and game is running
+      if (targetLocation === 'field' && game.timerStatus === 'running' && updatedStartTime === null) {
         updatedStartTime = now;
       } else if (targetLocation !== 'field') {
+        // Ensure timer is null if not on field (or inactive)
         updatedStartTime = null;
       }
+
       let updatedSubbedOnCount = playerState.subbedOnCount;
       let updatedSubbedOffCount = playerState.subbedOffCount;
-      if (sourceLocation === 'bench' && targetLocation === 'field') updatedSubbedOnCount++;
-      else if (sourceLocation === 'field' && targetLocation === 'bench') updatedSubbedOffCount++;
+      let substitutionEvent: GameEvent | null = null;
+
+      // --- Create Substitution Event if applicable ---
+      if (isGameActive) {
+          // Calculate current game seconds for the event
+          let currentSeconds = game.timerElapsedSeconds ?? 0;
+          if (game.timerStatus === 'running' && game.timerStartTime) {
+              currentSeconds += (Date.now() - game.timerStartTime) / 1000;
+          }
+          const eventSeconds = Math.round(currentSeconds);
+          // Determine the team for the event based on the game's location
+          const eventTeam = (game.location === 'home') ? 'home' : 'away';
+
+          // Log sub only if moving between bench and field
+          if (sourceLocation === 'bench' && targetLocation === 'field') {
+              updatedSubbedOnCount++;
+              substitutionEvent = {
+                  id: uuidv4(), type: 'substitution', team: eventTeam,
+                  playerInId: playerId, playerOutId: undefined, // Player coming in
+                  timestamp: now, gameSeconds: eventSeconds,
+              };
+          } else if (sourceLocation === 'field' && targetLocation === 'bench') {
+              updatedSubbedOffCount++;
+               substitutionEvent = {
+                  id: uuidv4(), type: 'substitution', team: eventTeam,
+                  playerInId: undefined, playerOutId: playerId, // Player coming out
+                  timestamp: now, gameSeconds: eventSeconds,
+              };
+          }
+          // Note: Swapping field players doesn't create a sub event here
+          // Note: Moving to/from 'inactive' doesn't create a sub event here
+      }
+
+      // Apply updates to player state
       playerState.location = targetLocation;
       playerState.position = targetLocation === 'field' ? newPosition : undefined;
       playerState.playtimeSeconds = updatedPlaytime;
       playerState.playtimerStartTime = updatedStartTime;
       playerState.subbedOnCount = updatedSubbedOnCount;
       playerState.subbedOffCount = updatedSubbedOffCount;
+      // isStarter and initialPosition remain unchanged by moves
+
+      // Update lineup array
       newLineup[playerIndex] = playerState;
+
+      // Add substitution event if created
+      const updatedEvents = substitutionEvent ? [...(game.events || []), substitutionEvent] : game.events;
+
+      // Update the specific game in the games array
       const updatedGames = [...prevGames];
-      updatedGames[gameIndex] = { ...game, lineup: newLineup };
+      updatedGames[gameIndex] = { ...game, lineup: newLineup, events: updatedEvents };
       return updatedGames;
     });
   };
@@ -544,15 +662,14 @@ export const TeamProvider: React.FC<TeamProviderProps> = ({ children, setCurrent
     teamName, setTeamName, teamLogo, setTeamLogo,
     players, addPlayer, updatePlayer, deletePlayer,
     games, addGame, updateGame, deleteGame,
-    // updateGameScore, // Removed
     startGameTimer, stopGameTimer, markGameAsFinished,
     resetGameLineup, movePlayerInGame, startPlayerTimerInGame, stopPlayerTimerInGame,
     movePlayer, swapPlayers,
     savedLineups, saveLineup, loadLineup, deleteLineup, resetLineup,
     setCurrentPage, selectGame,
     gameHistory, getMostRecentSeason, getMostRecentCompetition,
-    // NEW: Provide event functions
     addGameEvent, removeLastGameEvent,
+    // addCardEvent, // Deferred
   };
 
   return <TeamContext.Provider value={contextValue}>{children}</TeamContext.Provider>;
